@@ -1,0 +1,16 @@
+.runtime/
+.venv/
+__pycache__/
+*.pyc
+requests/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+.DS_Store
+build/
+dist/
+*.egg-info/
