@@ -14,3 +14,4 @@ requests/
 build/
 dist/
 *.egg-info/
+tests/

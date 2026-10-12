@@ -273,15 +273,16 @@ class TerminalUI:
         return value
 
     def _suggestions(self, text: str) -> list[tuple[str, str]]:
-        commands = [('/help', 'command guide'), ('/models', 'installed local models'),
-                    ('/model ', 'switch model'), ('/context', 'show context window'),
-                    ('/context ', 'set context tokens'), ('/requests', 'saved request progress'),
+        commands = [('/help', 'command guide'), ('/model ', 'switch model'),
+                    ('/models', 'installed local models'), ('/context ', 'set context tokens'),
+                    ('/context', 'show context window'), ('/requests', 'saved request progress'),
                     ('/resume', 'resume latest unfinished request'), ('/exit', 'quit Dimension')]
-        if text.startswith('/model '):
+        folded = text.casefold()
+        if folded.startswith('/model '):
             prefix = text[len('/model '):]
             return [(f'/model {name}', 'switch model') for name in self.models
-                    if name.startswith(prefix) and name != prefix]
-        if text.startswith('/context '):
+                    if name.casefold().startswith(prefix.casefold()) and name.casefold() != prefix.casefold()]
+        if folded.startswith('/context '):
             prefix = text[len('/context '):]
             return [(f'/context {size}', 'context size') for size in
                     ('4096', '8192', '16384', '32768', '65536')
@@ -289,7 +290,7 @@ class TerminalUI:
         if not text.startswith('/'):
             return []
         return [(command, description) for command, description in commands
-                if command.startswith(text) and command != text]
+                if command.casefold().startswith(folded) and command.casefold() != folded]
 
     def _interactive_prompt(self) -> str:
         """Single-line editor with a live slash-command picker and arrow navigation."""
@@ -301,22 +302,47 @@ class TerminalUI:
         selected = 0
         history_index = len(self._input_history)
         suggestions: list[tuple[str, str]] = []
+        menu_rows = 0
+
+        def clear_menu():
+            nonlocal menu_rows
+            if not menu_rows:
+                return
+            self.stream.write('\r\033[2K')
+            for _ in range(menu_rows):
+                self.stream.write('\033[1B\r\033[2K')
+            self.stream.write(f'\033[{menu_rows}A\r')
+            menu_rows = 0
 
         def redraw():
-            nonlocal suggestions, selected
+            nonlocal suggestions, selected, menu_rows
+            old_choice = suggestions[selected][0] if suggestions and selected < len(suggestions) else None
+            clear_menu()
             suggestions = self._suggestions(text)
-            selected = min(selected, max(0, len(suggestions) - 1))
+            selected = next((i for i, item in enumerate(suggestions) if item[0] == old_choice), 0)
             self.stream.write('\r\033[2K' + prompt + text)
             if cursor < len(text):
                 self.stream.write(f'\033[{len(text) - cursor}D')
-            self.stream.write('\033[s\033[J')
+            self.stream.write('\033[s')
             if suggestions:
-                for index, (command, description) in enumerate(suggestions[:8]):
+                width = max(40, shutil_terminal_width(self.stream) - 4)
+                command_width = min(25, max(14, width - 25))
+                description_width = max(8, width - command_width - 7)
+                start = max(0, min(selected - 6, len(suggestions) - 7))
+                end = min(len(suggestions), start + 7)
+                if start:
+                    self.stream.write('\r\n    ' + self.ink(f'↑ {start} above', '38;2;123;132;157'))
+                for index in range(start, end):
+                    command, description = suggestions[index]
                     marker = '❯' if index == selected else ' '
                     tone = '48;2;54;35;78;38;2;230;196;255' if index == selected else '38;2;145;153;180'
                     self.stream.write('\r\n  ' + self.ink(marker, '38;2;190;105;255') + ' ' +
-                                      self.ink(f'{command:<22}', tone) +
-                                      self.ink(description, '38;2;123;132;157'))
+                                      self.ink(f'{command[:command_width]:<{command_width}}', tone) +
+                                      self.ink(description[:description_width], '38;2;123;132;157'))
+                if end < len(suggestions):
+                    self.stream.write('\r\n    ' + self.ink(f'↓ {len(suggestions) - end} below',
+                                                               '38;2;123;132;157'))
+                menu_rows = (end - start) + bool(start) + bool(end < len(suggestions))
             self.stream.write('\033[u')
             self.stream.flush()
 
@@ -330,13 +356,12 @@ class TerminalUI:
                     if suggestions:
                         text = suggestions[selected][0]
                         cursor = len(text)
-                        suggestions = []
-                        redraw()
-                        continue
+                    clear_menu()
                     self.stream.write('\r\033[2K' + prompt + text + '\r\n')
                     self.stream.flush()
                     return text
                 if char == '\x03':
+                    clear_menu()
                     self.stream.write('\r\033[2K\r\n')
                     self.stream.flush()
                     raise KeyboardInterrupt
