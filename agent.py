@@ -641,7 +641,8 @@ def run(repo: Path, task: str, test_command: str, model: Model, *,
     bootstrap_repository(repo, ui)
     ensure_requests_excluded(repo)
     checkpoint = git(repo, 'rev-parse', 'HEAD')
-    request_path, request_state, resuming = request_for(repo, task, test_command, model.name)
+    model_name = getattr(model, 'name', type(model).__name__)
+    request_path, request_state, resuming = request_for(repo, task, test_command, model_name)
     if resuming:
         saved_checkpoint = request_state.get('checkpoint')
         if saved_checkpoint and saved_checkpoint != checkpoint:
@@ -707,6 +708,7 @@ def run(repo: Path, task: str, test_command: str, model: Model, *,
             file_read_counts: dict[str, int] = {}
             inspection_actions = 0
             forced_edit = False
+            forced_edit_attempts = 0
             failed_attempts: list[str] = []
             context = f'Task: {task}\nMilestone {number}/{len(milestones)}: {json.dumps(milestone)}\n' \
                       f'Repo map:\n{map_text}\nResearch:\n{brief}\nPrior milestones:\n' + '\n'.join(history[-6:])
@@ -715,22 +717,32 @@ def run(repo: Path, task: str, test_command: str, model: Model, *,
                                       'step': step + 1, 'last_activity': 'asking model for next action',
                                       'checkpoint': checkpoint, 'history': history})
                 save_request(request_path, request_state)
+                system_prompt = SYSTEM
+                if forced_edit:
+                    system_prompt += ('\nInspection is over. Do not use read or search again. '
+                                      'Use the file excerpts already in the conversation. '
+                                      'Return one small write or replace action now.')
                 with ui.activity(f'Milestone {number}/{len(milestones)} · step {step + 1}/{max_steps} · thinking'):
-                    action = model.ask(SYSTEM, context)
+                    action = model.ask(system_prompt, context)
                 kind = action.get('action')
                 if kind in {'read', 'search'}:
                     inspection_actions += 1
+                    if forced_edit:
+                        forced_edit_attempts += 1
+                        context += ('\nDimension blocked another inspection request because the inspection budget is exhausted. '
+                                    'Use the file excerpts already provided and return a small write or replace action. '
+                                    'Choose the most relevant file from the request and milestone.')
+                        ui.notice('Read blocked', f'edit-only retry {forced_edit_attempts}/3')
+                        if forced_edit_attempts >= 3:
+                            raise RuntimeError('Model kept requesting reads after three edit-only retries. '
+                                               'Try a narrower task, a larger context window, or a stronger coding model.')
+                        continue
                     if inspection_actions > 8:
-                        if forced_edit:
-                            raise RuntimeError('Model stalled while inspecting code; no files were changed. '
-                                               'Retry with a narrower request or a larger coding model.')
                         forced_edit = True
-                        ui.notice('Breaking inspection loop', 'requesting a concrete edit from the model')
-                        with ui.activity('Turning the inspected code into an edit'):
-                            action = model.ask(SYSTEM + '\nYou have inspected enough code. '
-                                               'Do not read or search again. Make the smallest relevant edit now. '
-                                               'Use one targeted replace or create one focused file.', context)
-                        kind = action.get('action')
+                        context += ('\nThe inspection budget is exhausted. You have enough context to make a first small edit. '
+                                    'From now on, use write or replace only; additional read/search actions will be blocked.')
+                        ui.notice('Inspection limit reached', 'switching to edit-only mode')
+                        continue
                 if kind == 'read':
                     try:
                         name = action['path']
@@ -761,6 +773,7 @@ def run(repo: Path, task: str, test_command: str, model: Model, *,
                 elif kind in {'write', 'replace'}:
                     inspection_actions = 0
                     forced_edit = False
+                    forced_edit_attempts = 0
                     if kind == 'replace':
                         name, old, new = action.get('path'), action.get('old'), action.get('new')
                         if not isinstance(name, str) or not isinstance(old, str) or not old or \

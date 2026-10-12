@@ -15,6 +15,7 @@ from terminal_ui import TerminalUI
 class FakeModel:
     def __init__(self, responses):
         self.responses = iter(responses)
+        self.name = 'test-model'
 
     def ask(self, system, user):
         return next(self.responses)
@@ -29,7 +30,7 @@ class AgentTests(unittest.TestCase):
         ui.check('python3 -m unittest', True, 0.4)
         view = output.getvalue()
         self.assertIn('D I M E N S I O N', view)
-        self.assertNotIn('◉', view)
+        self.assertIn('◉ MODEL', view)
         self.assertIn('Edited hello.py', view)
         self.assertIn('+print("hello")', view)
         self.assertIn('0.4s', view)
@@ -94,6 +95,35 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(run(repo, 'add recording', fallback_check(repo), model,
                                  max_steps=5), 0)
             self.assertIn('const recording = true;', (repo / 'background.js').read_text())
+
+    def test_inspection_limit_blocks_more_reads_and_allows_edit_retry(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = Path(d)
+            subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+            git(repo, 'config', 'user.name', 'Test')
+            git(repo, 'config', 'user.email', 'test@example.invalid')
+            (repo / 'background.js').write_text('const recording = false;\n')
+            (repo / 'notes.txt').write_text('\n'.join(f'note {line}' for line in range(1, 9)) + '\n')
+            git(repo, 'add', 'background.js', 'notes.txt')
+            git(repo, 'commit', '-qm', 'baseline')
+            plan = {'milestones': [{'goal': f'edit {number}', 'done': 'syntax'}
+                                   for number in range(1, 4)]}
+            reads = [{'action': 'read', 'path': 'background.js', 'start_line': 1, 'end_line': 1}]
+            reads.extend({'action': 'read', 'path': 'notes.txt', 'start_line': line, 'end_line': line}
+                         for line in range(1, 8))
+            responses = [plan, *reads,
+                         {'action': 'read', 'path': 'notes.txt', 'start_line': 8, 'end_line': 8},
+                         {'action': 'read', 'path': 'background.js', 'start_line': 1, 'end_line': 1},
+                         {'action': 'replace', 'path': 'background.js',
+                          'old': 'const recording = false;', 'new': 'const recording = true;'},
+                         {'action': 'write', 'files': {'status.txt': 'recording ready'}},
+                         {'action': 'write', 'files': {'done.txt': 'done'}}]
+            output = StringIO()
+            self.assertEqual(run(repo, 'add traffic recording', fallback_check(repo),
+                                 FakeModel(responses), max_steps=15,
+                                 ui=TerminalUI(output, color=False)), 0)
+            self.assertIn('const recording = true;', (repo / 'background.js').read_text())
+            self.assertIn('Read blocked', output.getvalue())
 
     def test_bootstrap_creates_private_remote_without_push(self):
         with tempfile.TemporaryDirectory() as d:
