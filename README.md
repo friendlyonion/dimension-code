@@ -64,3 +64,4 @@ Dimension --setup
 ```
 
 The tests cover the read-only question path, automatic check selection, a syntax fallback for JavaScript projects, targeted edits in files over 40 KB, terminal output, private GitHub repository setup without a push, expired login handling, rollback after five failures, green commits, cleanup after model errors, bounded local API requests, path safety, Tree-sitter mapping, log distillation, license flags, and console entry-point validation. A live three-milestone `add(a,b)` task completed with `qwen3.5:9b` in `.runtime/demo3`. A fuller calculator in `.runtime/demo4` exercised research, all four operations, CLI tests, failure distillation, rollback, and replanning; its 11 tests pass. Manual review caught and corrected an invalid console entry point in the generated metadata. The harness now checks that target before committing new metadata.
+# dimension-code
